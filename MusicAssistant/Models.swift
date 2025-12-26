@@ -640,21 +640,37 @@ struct MAMediaItemMetadata: Decodable, Hashable {
 // MARK: - Browse Item (for provider browsing)
 
 struct MABrowseItem: Identifiable, Decodable, Hashable {
-    var id: String { path }
+    var id: String { path ?? uri ?? UUID().uuidString }
 
-    let path: String
+    let itemId: String?
+    let provider: String?
+    let path: String?
     let name: String
     let label: String?
     let mediaType: MAMediaType?
     let image: MAMediaItemImage?
     let uri: String?
     let isExpandable: Bool
+    let isPlayable: Bool
+    let favorite: Bool
 
     var artworkPath: String? {
         image?.resolvedPath
     }
 
+    /// Check if this item is a folder that can be browsed
+    var isFolder: Bool {
+        mediaType == .folder || isExpandable
+    }
+
+    /// Check if this is a playable media item (track, radio, audiobook, etc.)
+    var canPlay: Bool {
+        isPlayable || (mediaType == .track || mediaType == .radio || mediaType == .audiobook)
+    }
+
     private enum CodingKeys: String, CodingKey {
+        case itemId = "item_id"
+        case provider
         case path
         case name
         case label
@@ -662,17 +678,23 @@ struct MABrowseItem: Identifiable, Decodable, Hashable {
         case image
         case uri
         case isExpandable = "is_expandable"
+        case isPlayable = "is_playable"
+        case favorite
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        path = (try? container.decode(String.self, forKey: .path)) ?? UUID().uuidString
+        itemId = try? container.decode(String.self, forKey: .itemId)
+        provider = try? container.decode(String.self, forKey: .provider)
+        path = try? container.decode(String.self, forKey: .path)
         name = (try? container.decode(String.self, forKey: .name)) ?? "Unknown"
         label = try? container.decode(String.self, forKey: .label)
         mediaType = try? container.decode(MAMediaType.self, forKey: .mediaType)
         image = try? container.decode(MAMediaItemImage.self, forKey: .image)
         uri = try? container.decode(String.self, forKey: .uri)
         isExpandable = (try? container.decode(Bool.self, forKey: .isExpandable)) ?? false
+        isPlayable = (try? container.decode(Bool.self, forKey: .isPlayable)) ?? false
+        favorite = (try? container.decode(Bool.self, forKey: .favorite)) ?? false
     }
 }
 
@@ -762,10 +784,12 @@ struct MAAudiobook: Identifiable, Decodable, Hashable {
     let uri: String?
     let favorite: Bool
     let image: MAMediaItemImage?
-    let author: String?
-    let narrator: String?
+    let authors: [String]
+    let narrators: [String]
     let publisher: String?
-    let totalDuration: Int?
+    let duration: Int?
+    let fullyPlayed: Bool?
+    let resumePositionMs: Int?
     let providerMappings: [MAProviderMapping]?
 
     var stableID: String {
@@ -776,6 +800,16 @@ struct MAAudiobook: Identifiable, Decodable, Hashable {
         image?.resolvedPath
     }
 
+    /// Convenience property for displaying primary author
+    var author: String? {
+        authors.first
+    }
+
+    /// Convenience property for displaying primary narrator
+    var narrator: String? {
+        narrators.first
+    }
+
     private enum CodingKeys: String, CodingKey {
         case itemID = "item_id"
         case provider
@@ -783,10 +817,12 @@ struct MAAudiobook: Identifiable, Decodable, Hashable {
         case uri
         case favorite
         case image
-        case author
-        case narrator
+        case authors
+        case narrators
         case publisher
-        case totalDuration = "total_duration"
+        case duration
+        case fullyPlayed = "fully_played"
+        case resumePositionMs = "resume_position_ms"
         case providerMappings = "provider_mappings"
     }
 
@@ -798,11 +834,377 @@ struct MAAudiobook: Identifiable, Decodable, Hashable {
         uri = try? container.decode(String.self, forKey: .uri)
         favorite = (try? container.decode(Bool.self, forKey: .favorite)) ?? false
         image = try? container.decode(MAMediaItemImage.self, forKey: .image)
-        author = try? container.decode(String.self, forKey: .author)
-        narrator = try? container.decode(String.self, forKey: .narrator)
+        authors = (try? container.decode([String].self, forKey: .authors)) ?? []
+        narrators = (try? container.decode([String].self, forKey: .narrators)) ?? []
         publisher = try? container.decode(String.self, forKey: .publisher)
-        totalDuration = try? container.decode(Int.self, forKey: .totalDuration)
+        duration = try? container.decode(Int.self, forKey: .duration)
+        fullyPlayed = try? container.decode(Bool.self, forKey: .fullyPlayed)
+        resumePositionMs = try? container.decode(Int.self, forKey: .resumePositionMs)
         providerMappings = try? container.decode(
             [MAProviderMapping].self, forKey: .providerMappings)
+    }
+}
+
+// MARK: - Provider Type Enum
+
+enum MAProviderType: String, Codable, Hashable, CaseIterable {
+    case music
+    case player
+    case metadata
+    case plugin
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        self = MAProviderType(rawValue: value) ?? .unknown
+    }
+
+    var displayName: String {
+        switch self {
+        case .music: return "Music Provider"
+        case .player: return "Player Provider"
+        case .metadata: return "Metadata Provider"
+        case .plugin: return "Plugin"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .music: return "music.note"
+        case .player: return "speaker.wave.2"
+        case .metadata: return "info.circle"
+        case .plugin: return "puzzlepiece"
+        case .unknown: return "questionmark"
+        }
+    }
+}
+
+// MARK: - Provider Stage Enum
+
+enum MAProviderStage: String, Codable, Hashable {
+    case alpha
+    case beta
+    case stable
+    case experimental
+    case unmaintained
+    case deprecated
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        self = MAProviderStage(rawValue: value) ?? .unknown
+    }
+
+    var displayName: String {
+        rawValue.capitalized
+    }
+
+    var color: String {
+        switch self {
+        case .stable: return "green"
+        case .beta: return "blue"
+        case .alpha: return "orange"
+        case .experimental: return "purple"
+        case .unmaintained: return "gray"
+        case .deprecated: return "red"
+        case .unknown: return "gray"
+        }
+    }
+}
+
+// MARK: - Config Entry Type Enum
+
+enum MAConfigEntryType: String, Codable, Hashable {
+    case boolean
+    case string
+    case secureString = "secure_string"
+    case integer
+    case float
+    case label
+    case divider
+    case action
+    case icon
+    case alert
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        self = MAConfigEntryType(rawValue: value) ?? .unknown
+    }
+}
+
+// MARK: - Provider Manifest
+
+struct MAProviderManifest: Identifiable, Decodable, Hashable {
+    var id: String { domain }
+
+    let type: MAProviderType
+    let domain: String
+    let name: String
+    let description: String
+    let codeowners: [String]
+    let credits: [String]
+    let requirements: [String]
+    let documentation: String?
+    let multiInstance: Bool
+    let builtin: Bool
+    let allowDisable: Bool
+    let stage: MAProviderStage
+    let icon: String?
+    let iconSvg: String?
+    let iconSvgDark: String?
+    let iconSvgMonochrome: String?
+    let dependsOn: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case domain
+        case name
+        case description
+        case codeowners
+        case credits
+        case requirements
+        case documentation
+        case multiInstance = "multi_instance"
+        case builtin
+        case allowDisable = "allow_disable"
+        case stage
+        case icon
+        case iconSvg = "icon_svg"
+        case iconSvgDark = "icon_svg_dark"
+        case iconSvgMonochrome = "icon_svg_monochrome"
+        case dependsOn = "depends_on"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = (try? container.decode(MAProviderType.self, forKey: .type)) ?? .unknown
+        domain = (try? container.decode(String.self, forKey: .domain)) ?? ""
+        name = (try? container.decode(String.self, forKey: .name)) ?? "Unknown"
+        description = (try? container.decode(String.self, forKey: .description)) ?? ""
+        codeowners = (try? container.decode([String].self, forKey: .codeowners)) ?? []
+        credits = (try? container.decode([String].self, forKey: .credits)) ?? []
+        requirements = (try? container.decode([String].self, forKey: .requirements)) ?? []
+        documentation = try? container.decode(String.self, forKey: .documentation)
+        multiInstance = (try? container.decode(Bool.self, forKey: .multiInstance)) ?? false
+        builtin = (try? container.decode(Bool.self, forKey: .builtin)) ?? false
+        allowDisable = (try? container.decode(Bool.self, forKey: .allowDisable)) ?? true
+        stage = (try? container.decode(MAProviderStage.self, forKey: .stage)) ?? .unknown
+        icon = try? container.decode(String.self, forKey: .icon)
+        iconSvg = try? container.decode(String.self, forKey: .iconSvg)
+        iconSvgDark = try? container.decode(String.self, forKey: .iconSvgDark)
+        iconSvgMonochrome = try? container.decode(String.self, forKey: .iconSvgMonochrome)
+        dependsOn = try? container.decode(String.self, forKey: .dependsOn)
+    }
+}
+
+// MARK: - Config Value Option
+
+struct MAConfigValueOption: Decodable, Hashable {
+    let title: String
+    let value: AnyCodable
+
+    enum CodingKeys: String, CodingKey {
+        case title
+        case value
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = (try? container.decode(String.self, forKey: .title)) ?? ""
+        value = (try? container.decode(AnyCodable.self, forKey: .value)) ?? AnyCodable("")
+    }
+}
+
+// MARK: - Config Entry
+
+struct MAConfigEntry: Identifiable, Decodable, Hashable {
+    var id: String { key }
+
+    let key: String
+    let type: MAConfigEntryType
+    let label: String
+    let defaultValue: AnyCodable?
+    let required: Bool
+    let options: [MAConfigValueOption]?
+    let range: [Double]?
+    let description: String?
+    let helpLink: String?
+    let multiValue: Bool
+    let dependsOn: String?
+    let dependsOnValue: AnyCodable?
+    let dependsOnValueNot: AnyCodable?
+    let hidden: Bool
+    let readOnly: Bool
+    let category: String
+    let action: String?
+    let actionLabel: String?
+    let immediateApply: Bool
+    var value: AnyCodable?
+
+    enum CodingKeys: String, CodingKey {
+        case key
+        case type
+        case label
+        case defaultValue = "default_value"
+        case required
+        case options
+        case range
+        case description
+        case helpLink = "help_link"
+        case multiValue = "multi_value"
+        case dependsOn = "depends_on"
+        case dependsOnValue = "depends_on_value"
+        case dependsOnValueNot = "depends_on_value_not"
+        case hidden
+        case readOnly = "read_only"
+        case category
+        case action
+        case actionLabel = "action_label"
+        case immediateApply = "immediate_apply"
+        case value
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = (try? container.decode(String.self, forKey: .key)) ?? ""
+        type = (try? container.decode(MAConfigEntryType.self, forKey: .type)) ?? .unknown
+        label = (try? container.decode(String.self, forKey: .label)) ?? ""
+        defaultValue = try? container.decode(AnyCodable.self, forKey: .defaultValue)
+        required = (try? container.decode(Bool.self, forKey: .required)) ?? false
+        options = try? container.decode([MAConfigValueOption].self, forKey: .options)
+        range = try? container.decode([Double].self, forKey: .range)
+        description = try? container.decode(String.self, forKey: .description)
+        helpLink = try? container.decode(String.self, forKey: .helpLink)
+        multiValue = (try? container.decode(Bool.self, forKey: .multiValue)) ?? false
+        dependsOn = try? container.decode(String.self, forKey: .dependsOn)
+        dependsOnValue = try? container.decode(AnyCodable.self, forKey: .dependsOnValue)
+        dependsOnValueNot = try? container.decode(AnyCodable.self, forKey: .dependsOnValueNot)
+        hidden = (try? container.decode(Bool.self, forKey: .hidden)) ?? false
+        readOnly = (try? container.decode(Bool.self, forKey: .readOnly)) ?? false
+        category = (try? container.decode(String.self, forKey: .category)) ?? "generic"
+        action = try? container.decode(String.self, forKey: .action)
+        actionLabel = try? container.decode(String.self, forKey: .actionLabel)
+        immediateApply = (try? container.decode(Bool.self, forKey: .immediateApply)) ?? false
+        value = try? container.decode(AnyCodable.self, forKey: .value)
+    }
+
+    // Helper to get current value or default
+    var effectiveValue: AnyCodable? {
+        value ?? defaultValue
+    }
+
+    var stringValue: String {
+        effectiveValue?.stringValue ?? ""
+    }
+
+    var boolValue: Bool {
+        effectiveValue?.boolValue ?? false
+    }
+
+    var intValue: Int {
+        effectiveValue?.intValue ?? 0
+    }
+
+    var doubleValue: Double {
+        effectiveValue?.doubleValue ?? 0.0
+    }
+}
+
+// MARK: - Provider Config
+
+struct MAProviderConfig: Identifiable, Decodable, Hashable {
+    var id: String { instanceID }
+
+    let type: MAProviderType
+    let domain: String
+    let instanceID: String
+    let manifest: MAProviderManifest?
+    let enabled: Bool
+    let name: String?
+    let lastError: String?
+    let values: [String: MAConfigEntry]
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case domain
+        case instanceID = "instance_id"
+        case manifest
+        case enabled
+        case name
+        case lastError = "last_error"
+        case values
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = (try? container.decode(MAProviderType.self, forKey: .type)) ?? .unknown
+        domain = (try? container.decode(String.self, forKey: .domain)) ?? ""
+        instanceID = (try? container.decode(String.self, forKey: .instanceID)) ?? ""
+        manifest = try? container.decode(MAProviderManifest.self, forKey: .manifest)
+        enabled = (try? container.decode(Bool.self, forKey: .enabled)) ?? false
+        name = try? container.decode(String.self, forKey: .name)
+        lastError = try? container.decode(String.self, forKey: .lastError)
+        values = (try? container.decode([String: MAConfigEntry].self, forKey: .values)) ?? [:]
+    }
+
+    var displayName: String {
+        name ?? manifest?.name ?? domain
+    }
+
+    var hasError: Bool {
+        lastError != nil && enabled
+    }
+}
+
+// MARK: - Player Config
+
+struct MAPlayerConfig: Identifiable, Decodable, Hashable {
+    var id: String { playerID }
+
+    let provider: String
+    let playerID: String
+    let enabled: Bool
+    let name: String?
+    let defaultName: String?
+    let values: [String: MAConfigEntry]
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case playerID = "player_id"
+        case enabled
+        case name
+        case defaultName = "default_name"
+        case values
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        provider = (try? container.decode(String.self, forKey: .provider)) ?? ""
+        playerID = (try? container.decode(String.self, forKey: .playerID)) ?? ""
+        enabled = (try? container.decode(Bool.self, forKey: .enabled)) ?? false
+        name = try? container.decode(String.self, forKey: .name)
+        defaultName = try? container.decode(String.self, forKey: .defaultName)
+        values = (try? container.decode([String: MAConfigEntry].self, forKey: .values)) ?? [:]
+    }
+
+    var displayName: String {
+        name ?? defaultName ?? playerID
+    }
+}
+
+// MARK: - Auth Session Event (for OAuth flows)
+
+struct MAAuthSessionEvent: Decodable {
+    let sessionID: String
+    let url: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "object_id"
+        case url = "data"
     }
 }

@@ -2,6 +2,8 @@ import SwiftUI
 
 struct BrowseView: View {
     @EnvironmentObject private var appModel: AppModel
+    @State private var providerItems: [MABrowseItem] = []
+    @State private var isLoadingProviders = false
 
     var body: some View {
         NavigationStack {
@@ -13,8 +15,62 @@ struct BrowseView: View {
                         }
                     }
                 }
+
+                // Provider Browse Section
+                Section("Browse Providers") {
+                    if isLoadingProviders {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                            Text("Loading...")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if providerItems.isEmpty {
+                        Text("No browsable providers")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(providerItems) { item in
+                            NavigationLink(
+                                destination: ProviderBrowseView(path: item.path, title: item.name)
+                            ) {
+                                HStack(spacing: 12) {
+                                    if let artworkPath = item.artworkPath {
+                                        ArtworkView(
+                                            urlString: artworkPath,
+                                            baseURL: appModel.settings.serverURL,
+                                            cornerRadius: 6,
+                                            placeholderIcon: iconForMediaType(item.mediaType)
+                                        )
+                                        .frame(width: 40, height: 40)
+                                    } else {
+                                        Image(systemName: iconForMediaType(item.mediaType))
+                                            .font(.title2)
+                                            .foregroundStyle(.pink)
+                                            .frame(width: 40, height: 40)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.name)
+                                            .font(.body)
+                                        if let label = item.label {
+                                            Text(label)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             .navigationTitle("Browse")
+            .task {
+                await loadProviderItems()
+            }
+            .refreshable {
+                await loadProviderItems()
+            }
         }
     }
 
@@ -33,6 +89,193 @@ struct BrowseView: View {
             AudiobooksListView()
         case .radio:
             RadioListView()
+        }
+    }
+
+    private func loadProviderItems() async {
+        guard let api = appModel.api, appModel.isSignedIn else { return }
+        isLoadingProviders = true
+        defer { isLoadingProviders = false }
+
+        do {
+            // Browse root level to get provider entry points
+            providerItems = try await api.browse(path: nil)
+        } catch {
+            print("Failed to load provider items: \(error)")
+            providerItems = []
+        }
+    }
+
+    private func iconForMediaType(_ type: MAMediaType?) -> String {
+        switch type {
+        case .album: return "square.stack"
+        case .artist: return "music.mic"
+        case .track: return "music.note"
+        case .playlist: return "music.note.list"
+        case .radio: return "radio"
+        case .audiobook: return "book.fill"
+        case .folder: return "folder.fill"
+        default: return "folder.fill"
+        }
+    }
+}
+
+// MARK: - Provider Browse View
+
+struct ProviderBrowseView: View {
+    @EnvironmentObject private var appModel: AppModel
+    let path: String?
+    let title: String
+
+    @State private var items: [MABrowseItem] = []
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+
+    private let columns = [
+        GridItem(.adaptive(minimum: 160), spacing: 16)
+    ]
+
+    var body: some View {
+        Group {
+            if isLoading {
+                ProgressView("Loading...")
+            } else if let error = errorMessage {
+                ContentUnavailableView {
+                    Label("Error", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Retry") {
+                        Task { await loadItems() }
+                    }
+                }
+            } else if items.isEmpty {
+                ContentUnavailableView {
+                    Label("Empty", systemImage: "folder")
+                } description: {
+                    Text("No items found")
+                }
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        ForEach(items) { item in
+                            if item.isFolder {
+                                NavigationLink(
+                                    destination: ProviderBrowseView(
+                                        path: item.path, title: item.name)
+                                ) {
+                                    BrowseItemGridCell(item: item)
+                                }
+                                .buttonStyle(.plain)
+                            } else if item.canPlay {
+                                Button {
+                                    Task { await playItem(item) }
+                                } label: {
+                                    BrowseItemGridCell(item: item)
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button {
+                                        Task { await playItem(item) }
+                                    } label: {
+                                        Label("Play", systemImage: "play.fill")
+                                    }
+                                }
+                            } else {
+                                BrowseItemGridCell(item: item)
+                            }
+                        }
+                    }
+                    .padding()
+                }
+            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await loadItems()
+        }
+        .refreshable {
+            await loadItems()
+        }
+    }
+
+    private func loadItems() async {
+        guard let api = appModel.api else {
+            errorMessage = "Not connected"
+            isLoading = false
+            return
+        }
+
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            items = try await api.browse(path: path)
+            isLoading = false
+        } catch {
+            errorMessage = error.localizedDescription
+            isLoading = false
+        }
+    }
+
+    private func playItem(_ item: MABrowseItem) async {
+        guard let uri = item.uri else { return }
+        await appModel.playMedia(uri: uri)
+    }
+}
+
+// MARK: - Browse Item Grid Cell
+
+struct BrowseItemGridCell: View {
+    @EnvironmentObject private var appModel: AppModel
+    let item: MABrowseItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ArtworkView(
+                urlString: item.artworkPath,
+                baseURL: appModel.settings.serverURL,
+                cornerRadius: item.isFolder ? 8 : 6,
+                placeholderIcon: iconForItem
+            )
+            .aspectRatio(1, contentMode: .fit)
+            .overlay(alignment: .bottomTrailing) {
+                if item.canPlay && !item.isFolder {
+                    Image(systemName: "play.circle.fill")
+                        .font(.title)
+                        .foregroundStyle(.white)
+                        .shadow(radius: 2)
+                        .padding(8)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                    .foregroundStyle(.primary)
+
+                if let label = item.label {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private var iconForItem: String {
+        switch item.mediaType {
+        case .album: return "square.stack"
+        case .artist: return "music.mic"
+        case .track: return "music.note"
+        case .playlist: return "music.note.list"
+        case .radio: return "radio"
+        case .audiobook: return "book.fill"
+        case .folder: return "folder.fill"
+        default: return item.isFolder ? "folder.fill" : "music.note"
         }
     }
 }
@@ -105,13 +348,16 @@ struct AlbumsListView: View {
         isLoading = true
         defer { isLoading = false }
         do {
+            var args: [String: AnyCodable] = [
+                "limit": .int(pageSize),
+                "offset": .int(offset),
+            ]
+            if !search.isEmpty {
+                args["search"] = .string(search)
+            }
             let result = try await api.execute(
                 command: "music/albums/library_items",
-                args: [
-                    "search": search.isEmpty ? .null : .string(search),
-                    "limit": .int(pageSize),
-                    "offset": .int(offset),
-                ],
+                args: args,
                 as: [MAAlbum].self
             )
             if reset {
@@ -1179,19 +1425,19 @@ struct AudiobookDetailView: View {
                             .font(.title2.weight(.bold))
                             .multilineTextAlignment(.center)
 
-                        if let author = audiobook.author {
-                            Text(author)
+                        if !audiobook.authors.isEmpty {
+                            Text(audiobook.authors.joined(separator: ", "))
                                 .font(.title3)
                                 .foregroundStyle(.pink)
                         }
 
-                        if let narrator = audiobook.narrator {
-                            Text("Narrated by \(narrator)")
+                        if !audiobook.narrators.isEmpty {
+                            Text("Narrated by \(audiobook.narrators.joined(separator: ", "))")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
 
-                        if let duration = audiobook.totalDuration {
+                        if let duration = audiobook.duration {
                             Text(formatDuration(duration))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

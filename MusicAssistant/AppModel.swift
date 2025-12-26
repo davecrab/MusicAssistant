@@ -20,7 +20,8 @@ final class AppModel: ObservableObject {
     private lazy var nowPlaying = NowPlayingBridge(
         onPlayPause: { [weak self] in await self?.togglePlayPause() },
         onNext: { [weak self] in await self?.nextTrack() },
-        onPrevious: { [weak self] in await self?.previousTrack() }
+        onPrevious: { [weak self] in await self?.previousTrack() },
+        onSeek: { [weak self] position in await self?.seek(to: position) }
     )
 
     var api: MusicAssistantAPI? {
@@ -86,13 +87,19 @@ final class AppModel: ObservableObject {
             }
 
             if let playerID = selectedPlayerID {
-                let queue = try await api.execute(
+                let queue = try await api.executeOptional(
                     command: "player_queues/get_active_queue",
                     args: ["player_id": .string(playerID)],
                     as: MAPlayerQueue.self
                 )
                 activeQueue = queue
-                nowPlaying.update(queue: queue)
+                // Update base URL for artwork loading
+                nowPlaying.setBaseURL(settings.serverURL)
+                if let queue {
+                    nowPlaying.update(queue: queue)
+                } else {
+                    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+                }
             }
 
             lastError = nil

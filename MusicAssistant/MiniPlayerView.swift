@@ -31,6 +31,8 @@ struct MiniPlayerView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Progress bar at top (only when playing)
+            // Uses UnevenRoundedRectangle to match the parent's top corners
+            // TODO: make a constant for the radius values and use across progress bar and mini player background
             if let queue, queue.currentItem != nil {
                 GeometryReader { geometry in
                     let progress: CGFloat =
@@ -38,16 +40,28 @@ struct MiniPlayerView: View {
                             duration > 0 ? queue.elapsedTime / Double(duration) : 0
                         } ?? 0
 
-                    Rectangle()
-                        .fill(Color.clear)
-                        .frame(height: 2)
-                        .background(alignment: .leading) {
-                            Rectangle()
-                                .fill(Color.pink)
-                                .frame(width: geometry.size.width * min(1, max(0, progress)))
-                        }
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 20,
+                        bottomLeadingRadius: 0,
+                        bottomTrailingRadius: 0,
+                        topTrailingRadius: 20,
+                        style: .continuous
+                    )
+                    .fill(Color(.systemGray5).opacity(0.3))
+                    .frame(height: 3)
+                    .overlay(alignment: .leading) {
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 20,
+                            bottomLeadingRadius: 0,
+                            bottomTrailingRadius: 0,
+                            topTrailingRadius: progress > 0.95 ? 20 : 0,
+                            style: .continuous
+                        )
+                        .fill(Color.pink)
+                        .frame(width: geometry.size.width * min(1, max(0, progress)))
+                    }
                 }
-                .frame(height: 2)
+                .frame(height: 3)
             }
 
             Button(action: onTap) {
