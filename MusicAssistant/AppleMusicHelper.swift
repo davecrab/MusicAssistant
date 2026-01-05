@@ -1,190 +1,46 @@
 import Combine
 import Foundation
-import MusicKit
-import StoreKit
 import SwiftUI
+import WebKit
 
-/// Helper class for Apple Music / MusicKit integration
-/// This enables automatic retrieval of the Music User Token for Apple Music provider setup
+/// Helper class for Apple Music authentication
+/// Uses WebKit-based authentication to extract the media-user-token cookie
 @MainActor
 class AppleMusicHelper: ObservableObject {
     static let shared = AppleMusicHelper()
 
-    @Published var authorizationStatus: MusicAuthorization.Status = .notDetermined
-    @Published var isAuthorizing = false
+    @Published var isAuthenticating = false
     @Published var lastError: String?
+    @Published var hasExistingToken = false
 
     private init() {
-        // Check initial status
-        authorizationStatus = MusicAuthorization.currentStatus
-    }
-
-    /// Request authorization to access Apple Music
-    func requestAuthorization() async -> Bool {
-        isAuthorizing = true
-        lastError = nil
-
-        let status = await MusicAuthorization.request()
-        authorizationStatus = status
-        isAuthorizing = false
-
-        switch status {
-        case .authorized:
-            return true
-        case .denied:
-            lastError = "Apple Music access was denied. Please enable it in Settings."
-            return false
-        case .restricted:
-            lastError = "Apple Music access is restricted on this device."
-            return false
-        case .notDetermined:
-            lastError = "Authorization status could not be determined."
-            return false
-        @unknown default:
-            lastError = "Unknown authorization status."
-            return false
+        // Check for existing token on init
+        Task {
+            await checkForExistingToken()
         }
     }
 
-    /// Get the Music User Token for Apple Music API
-    /// This token can be used with the Music Assistant Apple Music provider
-    func getUserToken() async -> Result<String, AppleMusicError> {
-        // First check authorization
-        if authorizationStatus != .authorized {
-            let authorized = await requestAuthorization()
-            if !authorized {
-                return .failure(.notAuthorized(lastError ?? "Not authorized"))
-            }
-        }
-
-        do {
-            // Request a user token from Apple Music
-            // The developer token is handled automatically by MusicKit
-            let userToken = try await MusicUserTokenProvider().userToken(
-                for: "com.music-assistant.ios",
-                options: .ignoreCache
-            )
-
-            return .success(userToken)
-        } catch {
-            // If MusicUserTokenProvider fails, return the error
-            // The deprecated SKCloudServiceController method has been removed
-            return .failure(.tokenExtractionNotSupported)
-        }
+    /// Check if there's an existing Apple Music token in the cookie store
+    func checkForExistingToken() async {
+        let token = await AppleMusicTokenExtractor.shared.checkExistingToken()
+        hasExistingToken = token != nil
     }
 
-    /// Check if Apple Music subscription is active
-    func checkSubscriptionStatus() async -> SubscriptionStatus {
-        guard authorizationStatus == .authorized else {
-            return .unknown
-        }
-
-        do {
-            let subscription = try await MusicSubscription.current
-            if subscription.canPlayCatalogContent {
-                return .active
-            } else if subscription.canBecomeSubscriber {
-                return .eligible
-            } else {
-                return .none
-            }
-        } catch {
-            return .unknown
-        }
+    /// Get an existing token from the cookie store if available
+    func getExistingToken() async -> String? {
+        return await AppleMusicTokenExtractor.shared.checkExistingToken()
     }
 
-    /// Reset authorization state
+    /// Clear any cached Apple Music cookies (for re-authentication)
+    func clearCachedAuth() async {
+        await AppleMusicTokenExtractor.shared.clearAppleMusicCookies()
+        hasExistingToken = false
+    }
+
+    /// Reset helper state
     func reset() {
-        authorizationStatus = MusicAuthorization.currentStatus
+        isAuthenticating = false
         lastError = nil
-    }
-}
-
-// MARK: - Custom User Token Provider
-
-/// A provider that can request user tokens from Apple Music
-private actor MusicUserTokenProvider {
-    func userToken(for bundleIdentifier: String, options: Options = []) async throws -> String {
-        // Use the MusicDataRequest approach to get a user token
-        // This requires a valid Apple Music subscription
-
-        // First, verify we can make requests
-        let request = MusicCatalogSearchRequest(term: "test", types: [Song.self])
-
-        do {
-            // If this succeeds, we have a valid session
-            _ = try await request.response()
-
-            // Now get the user token through subscription info
-            let subscription = try await MusicSubscription.current
-            guard subscription.canPlayCatalogContent else {
-                throw AppleMusicError.noSubscription
-            }
-
-            // The user token is embedded in successful API requests
-            // We need to extract it from the response headers
-            // This is a workaround since MusicKit doesn't directly expose the token
-
-            throw AppleMusicError.tokenExtractionNotSupported
-        } catch {
-            throw error
-        }
-    }
-
-    struct Options: OptionSet {
-        let rawValue: Int
-        static let ignoreCache = Options(rawValue: 1 << 0)
-    }
-}
-
-// MARK: - Error Types
-
-enum AppleMusicError: LocalizedError {
-    case notAuthorized(String)
-    case tokenRequestFailed(String)
-    case noTokenReturned
-    case noSubscription
-    case tokenExtractionNotSupported
-
-    var errorDescription: String? {
-        switch self {
-        case .notAuthorized(let reason):
-            return "Not authorized to access Apple Music: \(reason)"
-        case .tokenRequestFailed(let reason):
-            return "Failed to request user token: \(reason)"
-        case .noTokenReturned:
-            return "No user token was returned from Apple Music"
-        case .noSubscription:
-            return "An active Apple Music subscription is required"
-        case .tokenExtractionNotSupported:
-            return "Automatic token extraction is not supported. Please obtain the token manually."
-        }
-    }
-}
-
-// MARK: - Subscription Status
-
-enum SubscriptionStatus {
-    case active
-    case eligible
-    case none
-    case unknown
-
-    var description: String {
-        switch self {
-        case .active:
-            return "Active Apple Music subscription"
-        case .eligible:
-            return "Eligible for Apple Music subscription"
-        case .none:
-            return "No Apple Music subscription"
-        case .unknown:
-            return "Unknown subscription status"
-        }
-    }
-
-    var isSubscribed: Bool {
-        self == .active
     }
 }
 
@@ -194,8 +50,9 @@ struct AppleMusicSetupView: View {
     @StateObject private var helper = AppleMusicHelper.shared
     @State private var userToken: String = ""
     @State private var isLoading = false
+    @State private var showWebAuth = false
     @State private var showManualEntry = false
-    @State private var subscriptionStatus: SubscriptionStatus = .unknown
+    @State private var checkingExistingToken = true
 
     var onTokenObtained: ((String) -> Void)?
 
@@ -203,64 +60,71 @@ struct AppleMusicSetupView: View {
         List {
             // Status Section
             Section {
-                HStack {
-                    Label("Authorization", systemImage: authIcon)
-                    Spacer()
-                    Text(authStatusText)
-                        .foregroundStyle(authStatusColor)
-                }
-
-                if helper.authorizationStatus == .authorized {
+                if checkingExistingToken {
                     HStack {
-                        Label("Subscription", systemImage: subscriptionIcon)
+                        Label("Checking for existing token...", systemImage: "magnifyingglass")
                         Spacer()
-                        Text(subscriptionStatus.description)
-                            .foregroundStyle(.secondary)
+                        ProgressView()
                     }
+                } else if helper.hasExistingToken {
+                    HStack {
+                        Label("Existing Token Found", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Spacer()
+                        Button("Use") {
+                            Task { await useExistingToken() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                } else {
+                    Label("No Token Found", systemImage: "xmark.circle")
+                        .foregroundStyle(.secondary)
                 }
             } header: {
                 Text("Apple Music Status")
             }
 
-            // Action Section
+            // Authentication Section
             Section {
-                if helper.authorizationStatus != .authorized {
-                    Button {
-                        Task {
-                            _ = await helper.requestAuthorization()
-                            if helper.authorizationStatus == .authorized {
-                                subscriptionStatus = await helper.checkSubscriptionStatus()
-                            }
-                        }
-                    } label: {
-                        Label("Authorize Apple Music", systemImage: "apple.logo")
+                // Primary method: WebKit sign-in
+                Button {
+                    showWebAuth = true
+                } label: {
+                    HStack {
+                        Label("Sign in to Apple Music", systemImage: "globe")
+                        Spacer()
+                        Image(systemName: "arrow.up.forward.square")
+                            .foregroundStyle(.secondary)
                     }
-                    .disabled(helper.isAuthorizing)
-                } else {
-                    Button {
-                        Task { await attemptGetToken() }
-                    } label: {
-                        HStack {
-                            Label("Get User Token Automatically", systemImage: "key")
-                            if isLoading {
-                                Spacer()
-                                ProgressView()
-                            }
-                        }
-                    }
-                    .disabled(isLoading)
                 }
 
+                // Secondary method: Manual entry
                 Button {
-                    showManualEntry = true
+                    showManualEntry.toggle()
                 } label: {
-                    Label("Enter Token Manually", systemImage: "text.cursor")
+                    Label(
+                        showManualEntry ? "Hide Manual Entry" : "Enter Token Manually",
+                        systemImage: "text.cursor"
+                    )
+                }
+
+                // Re-authenticate option
+                if helper.hasExistingToken {
+                    Button(role: .destructive) {
+                        Task {
+                            await helper.clearCachedAuth()
+                            userToken = ""
+                        }
+                    } label: {
+                        Label("Clear Saved Token", systemImage: "trash")
+                    }
                 }
             } header: {
                 Text("Get Token")
             } footer: {
                 Text(
-                    "The automatic method may not work on all devices. If it fails, you can obtain the token manually from music.apple.com using browser developer tools."
+                    "Sign in to Apple Music using the web browser to automatically extract your token. Alternatively, you can enter a token manually."
                 )
             }
 
@@ -332,68 +196,31 @@ struct AppleMusicSetupView: View {
             }
         }
         .navigationTitle("Apple Music Setup")
+        .sheet(isPresented: $showWebAuth) {
+            AppleMusicWebAuthView(
+                onTokenExtracted: { token in
+                    userToken = token
+                    showWebAuth = false
+                    Task {
+                        await helper.checkForExistingToken()
+                    }
+                },
+                onCancel: {
+                    showWebAuth = false
+                }
+            )
+        }
         .task {
-            if helper.authorizationStatus == .authorized {
-                subscriptionStatus = await helper.checkSubscriptionStatus()
-            }
+            checkingExistingToken = true
+            await helper.checkForExistingToken()
+            checkingExistingToken = false
         }
     }
 
-    private func attemptGetToken() async {
-        isLoading = true
-
-        let result = await helper.getUserToken()
-
-        await MainActor.run {
-            isLoading = false
-
-            switch result {
-            case .success(let token):
-                userToken = token
-            case .failure(let error):
-                // Show manual entry on failure
-                showManualEntry = true
-                helper.lastError = error.localizedDescription
-            }
-        }
-    }
-
-    private var authIcon: String {
-        switch helper.authorizationStatus {
-        case .authorized: return "checkmark.circle.fill"
-        case .denied: return "xmark.circle.fill"
-        case .restricted: return "lock.fill"
-        case .notDetermined: return "questionmark.circle"
-        @unknown default: return "questionmark.circle"
-        }
-    }
-
-    private var authStatusText: String {
-        switch helper.authorizationStatus {
-        case .authorized: return "Authorized"
-        case .denied: return "Denied"
-        case .restricted: return "Restricted"
-        case .notDetermined: return "Not Determined"
-        @unknown default: return "Unknown"
-        }
-    }
-
-    private var authStatusColor: Color {
-        switch helper.authorizationStatus {
-        case .authorized: return .green
-        case .denied: return .red
-        case .restricted: return .orange
-        case .notDetermined: return .secondary
-        @unknown default: return .secondary
-        }
-    }
-
-    private var subscriptionIcon: String {
-        switch subscriptionStatus {
-        case .active: return "checkmark.seal.fill"
-        case .eligible: return "star"
-        case .none: return "xmark.seal"
-        case .unknown: return "questionmark"
+    private func useExistingToken() async {
+        if let token = await helper.getExistingToken() {
+            userToken = token
+            onTokenObtained?(token)
         }
     }
 

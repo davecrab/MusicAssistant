@@ -1,6 +1,6 @@
-import MusicKit
 import SafariServices
 import SwiftUI
+import WebKit
 
 // MARK: - Providers Config List View
 
@@ -534,7 +534,9 @@ struct ProviderSetupView: View {
     @State private var authURL: URL?
     @State private var showAuthSheet = false
     @State private var showAppleMusicHelper = false
-    @State private var appleMusicAuthStatus: MusicAuthorization.Status = .notDetermined
+    @State private var showAppleMusicWebAuth = false
+    @State private var hasExistingAppleMusicToken = false
+    @State private var checkingExistingToken = false
 
     // Check if this is the Apple Music provider
     private var isAppleMusicProvider: Bool {
@@ -578,38 +580,54 @@ struct ProviderSetupView: View {
                     // Apple Music Helper Section (only for Apple Music provider)
                     if isAppleMusicProvider {
                         Section {
-                            // MusicKit Authorization Status
-                            HStack {
-                                Label("Apple Music Access", systemImage: appleMusicStatusIcon)
-                                Spacer()
-                                Text(appleMusicStatusText)
-                                    .foregroundStyle(appleMusicStatusColor)
+                            // Check for existing token
+                            if checkingExistingToken {
+                                HStack {
+                                    Label(
+                                        "Checking for existing token...",
+                                        systemImage: "magnifyingglass")
+                                    Spacer()
+                                    ProgressView()
+                                }
+                            } else if hasExistingAppleMusicToken {
+                                HStack {
+                                    Label(
+                                        "Existing Token Found", systemImage: "checkmark.circle.fill"
+                                    )
+                                    .foregroundStyle(.green)
+                                    Spacer()
+                                    Button("Use") {
+                                        Task { await useExistingAppleMusicToken() }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                }
                             }
 
-                            if appleMusicAuthStatus != .authorized {
-                                Button {
-                                    Task { await requestAppleMusicAuth() }
-                                } label: {
-                                    Label("Authorize Apple Music", systemImage: "apple.logo")
-                                }
-                            } else {
-                                Button {
-                                    Task { await getAppleMusicToken() }
-                                } label: {
-                                    Label("Get Token from Device", systemImage: "key.fill")
+                            // Primary method: WebKit sign-in
+                            Button {
+                                showAppleMusicWebAuth = true
+                            } label: {
+                                HStack {
+                                    Label("Sign in to Apple Music", systemImage: "globe")
+                                    Spacer()
+                                    Image(systemName: "arrow.up.forward.square")
+                                        .foregroundStyle(.secondary)
                                 }
                             }
 
+                            // Manual help
                             Button {
                                 showAppleMusicHelper = true
                             } label: {
-                                Label("Apple Music Setup Help", systemImage: "questionmark.circle")
+                                Label(
+                                    "Manual Setup Instructions", systemImage: "questionmark.circle")
                             }
                         } header: {
                             Text("Quick Setup")
                         } footer: {
                             Text(
-                                "You can try to get the token automatically from your device's Apple Music subscription, or follow the manual instructions."
+                                "Sign in to Apple Music using the web browser to automatically extract your token. Alternatively, follow the manual instructions."
                             )
                         }
                     }
@@ -652,6 +670,20 @@ struct ProviderSetupView: View {
                 SafariView(url: url)
             }
         }
+        .sheet(isPresented: $showAppleMusicWebAuth) {
+            AppleMusicWebAuthView(
+                onTokenExtracted: { token in
+                    values["music_user_token"] = AnyCodable(token)
+                    showAppleMusicWebAuth = false
+                    Task {
+                        await checkForExistingAppleMusicToken()
+                    }
+                },
+                onCancel: {
+                    showAppleMusicWebAuth = false
+                }
+            )
+        }
         .sheet(isPresented: $showAppleMusicHelper) {
             NavigationStack {
                 AppleMusicSetupView { token in
@@ -671,64 +703,26 @@ struct ProviderSetupView: View {
         .task {
             await loadConfigEntries()
             if isAppleMusicProvider {
-                appleMusicAuthStatus = MusicAuthorization.currentStatus
+                await checkForExistingAppleMusicToken()
             }
         }
     }
 
     // MARK: - Apple Music Helpers
 
-    private var appleMusicStatusIcon: String {
-        switch appleMusicAuthStatus {
-        case .authorized: return "checkmark.circle.fill"
-        case .denied: return "xmark.circle.fill"
-        case .restricted: return "lock.fill"
-        case .notDetermined: return "questionmark.circle"
-        @unknown default: return "questionmark.circle"
-        }
-    }
-
-    private var appleMusicStatusText: String {
-        switch appleMusicAuthStatus {
-        case .authorized: return "Authorized"
-        case .denied: return "Denied"
-        case .restricted: return "Restricted"
-        case .notDetermined: return "Not Determined"
-        @unknown default: return "Unknown"
-        }
-    }
-
-    private var appleMusicStatusColor: Color {
-        switch appleMusicAuthStatus {
-        case .authorized: return .green
-        case .denied: return .red
-        case .restricted: return .orange
-        case .notDetermined: return .secondary
-        @unknown default: return .secondary
-        }
-    }
-
-    private func requestAppleMusicAuth() async {
-        let status = await MusicAuthorization.request()
+    private func checkForExistingAppleMusicToken() async {
+        checkingExistingToken = true
+        let token = await AppleMusicTokenExtractor.shared.checkExistingToken()
         await MainActor.run {
-            appleMusicAuthStatus = status
+            hasExistingAppleMusicToken = token != nil
+            checkingExistingToken = false
         }
     }
 
-    private func getAppleMusicToken() async {
-        // Use the AppleMusicHelper to try to get the token
-        let helper = await AppleMusicHelper.shared
-        let result = await helper.getUserToken()
-
-        await MainActor.run {
-            switch result {
-            case .success(let token):
-                // Set the token in our values
+    private func useExistingAppleMusicToken() async {
+        if let token = await AppleMusicTokenExtractor.shared.checkExistingToken() {
+            await MainActor.run {
                 values["music_user_token"] = AnyCodable(token)
-            case .failure(let error):
-                // Show error and open helper
-                errorMessage = error.localizedDescription
-                showAppleMusicHelper = true
             }
         }
     }

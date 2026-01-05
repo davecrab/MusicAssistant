@@ -132,6 +132,22 @@ struct MAPlayerMedia: Decodable, Hashable {
     let imageURL: String?
     let duration: Int?
 
+    init(
+        uri: String,
+        title: String?,
+        artist: String?,
+        album: String?,
+        imageURL: String?,
+        duration: Int?
+    ) {
+        self.uri = uri
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.imageURL = imageURL
+        self.duration = duration
+    }
+
     private enum CodingKeys: String, CodingKey {
         case uri
         case title
@@ -152,6 +168,24 @@ struct MAPlayerMedia: Decodable, Hashable {
     }
 }
 
+// MARK: - Stream Details
+
+struct MAStreamDetails: Decodable, Hashable {
+    let provider: String
+    let itemID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case itemID = "item_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        provider = (try? container.decode(String.self, forKey: .provider)) ?? ""
+        itemID = (try? container.decode(String.self, forKey: .itemID)) ?? ""
+    }
+}
+
 // MARK: - Queue Models
 
 struct MAPlayerQueue: Identifiable, Decodable, Hashable {
@@ -168,6 +202,32 @@ struct MAPlayerQueue: Identifiable, Decodable, Hashable {
     let elapsedTime: Double
     let state: MAPlaybackState
     let currentItem: MAQueueItem?
+
+    init(
+        queueID: String,
+        active: Bool,
+        displayName: String,
+        available: Bool,
+        items: Int,
+        shuffleEnabled: Bool,
+        repeatMode: MARepeatMode,
+        currentIndex: Int?,
+        elapsedTime: Double,
+        state: MAPlaybackState,
+        currentItem: MAQueueItem?
+    ) {
+        self.queueID = queueID
+        self.active = active
+        self.displayName = displayName
+        self.available = available
+        self.items = items
+        self.shuffleEnabled = shuffleEnabled
+        self.repeatMode = repeatMode
+        self.currentIndex = currentIndex
+        self.elapsedTime = elapsedTime
+        self.state = state
+        self.currentItem = currentItem
+    }
 
     private enum CodingKeys: String, CodingKey {
         case queueID = "queue_id"
@@ -208,6 +268,7 @@ struct MAQueueItem: Identifiable, Decodable, Hashable {
     let duration: Int?
     let image: MAMediaItemImage?
     let mediaItem: MATrack?
+    let streamDetails: MAStreamDetails?
 
     private enum CodingKeys: String, CodingKey {
         case queueID = "queue_id"
@@ -216,6 +277,7 @@ struct MAQueueItem: Identifiable, Decodable, Hashable {
         case duration
         case image
         case mediaItem = "media_item"
+        case streamDetails = "streamdetails"
     }
 
     init(from decoder: Decoder) throws {
@@ -227,6 +289,7 @@ struct MAQueueItem: Identifiable, Decodable, Hashable {
         duration = try? container.decode(Int.self, forKey: .duration)
         image = try? container.decode(MAMediaItemImage.self, forKey: .image)
         mediaItem = try? container.decode(MATrack.self, forKey: .mediaItem)
+        streamDetails = try? container.decode(MAStreamDetails.self, forKey: .streamDetails)
     }
 }
 

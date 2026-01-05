@@ -126,6 +126,8 @@ struct PlayersView: View {
         }
 
         switch player.type?.lowercased() {
+        case "ios_device":
+            return "iphone"
         case "airplay":
             return "airplayaudio"
         case "chromecast", "cast":
@@ -181,33 +183,35 @@ private struct ActivePlayerCard: View {
                 Spacer()
             }
 
-            // Volume slider
-            VStack(spacing: 8) {
-                HStack(spacing: 12) {
-                    Image(systemName: "speaker.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            if player.volumeLevel != nil {
+                // Volume slider
+                VStack(spacing: 8) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "speaker.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
 
-                    Slider(value: $volume, in: 0...100) { editing in
-                        if !editing {
-                            Task {
-                                await appModel.setVolume(
-                                    playerID: player.playerID,
-                                    level: Int(volume)
-                                )
+                        Slider(value: $volume, in: 0...100) { editing in
+                            if !editing {
+                                Task {
+                                    await appModel.setVolume(
+                                        playerID: player.playerID,
+                                        level: Int(volume)
+                                    )
+                                }
                             }
                         }
-                    }
-                    .tint(.pink)
+                        .tint(.pink)
 
-                    Image(systemName: "speaker.wave.3.fill")
+                        Image(systemName: "speaker.wave.3.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("\(Int(volume))%")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-
-                Text("\(Int(volume))%")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 8)
@@ -229,6 +233,8 @@ private struct ActivePlayerCard: View {
         }
 
         switch player.type?.lowercased() {
+        case "ios_device":
+            return "iphone"
         case "airplay":
             return "airplayaudio"
         case "chromecast", "cast":
@@ -293,8 +299,8 @@ private struct PlayerRow: View {
                 volumeIndicator
             }
 
-            // Volume control (only for selected player)
-            if isSelected {
+            // Volume control (only for selected player with volume support)
+            if isSelected, player.volumeLevel != nil {
                 volumeSlider
             }
         }
@@ -397,6 +403,8 @@ private struct PlayerRow: View {
         }
 
         switch player.type?.lowercased() {
+        case "ios_device":
+            return "iphone"
         case "airplay":
             return "airplayaudio"
         case "chromecast", "cast":

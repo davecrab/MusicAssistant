@@ -450,6 +450,8 @@ private struct PlayerOutputButton: View {
         }
 
         switch player.type?.lowercased() {
+        case "ios_device":
+            return "iphone"
         case "airplay":
             return "airplayaudio"
         case "chromecast", "cast":

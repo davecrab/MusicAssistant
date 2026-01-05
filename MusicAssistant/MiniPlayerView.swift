@@ -219,6 +219,8 @@ struct MiniPlayerView: View {
         }
 
         switch player.type?.lowercased() {
+        case "ios_device":
+            return "iphone"
         case "airplay":
             return "airplayaudio"
         case "chromecast", "cast":
@@ -356,6 +358,8 @@ struct SpeakerGroupSheet: View {
         }
 
         switch player.type?.lowercased() {
+        case "ios_device":
+            return "iphone"
         case "airplay":
             return "airplayaudio"
         case "chromecast", "cast":
@@ -416,6 +420,8 @@ struct SpeakerToggleRow: View {
 
     private var iconForPlayer: String {
         switch player.type?.lowercased() {
+        case "ios_device":
+            return "iphone"
         case "airplay":
             return "airplayaudio"
         case "chromecast", "cast":
