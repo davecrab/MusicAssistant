@@ -181,8 +181,3 @@ This project is part of the Music Assistant ecosystem.
 ## Acknowledgments
 
 - Built for the [Music Assistant](https://music-assistant.io/) project
-- Part of the [Open Home Foundation](https://www.openhomefoundation.org/)
-
----
-
-[![A project from the Open Home Foundation](https://www.openhomefoundation.org/badges/ohf-project.png)](https://www.openhomefoundation.org/)
